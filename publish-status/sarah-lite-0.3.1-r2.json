@@ -1,0 +1,11 @@
+{
+  "status": "pending",
+  "channel": "stable",
+  "cloudflare_r2": true,
+  "manifest_activated": false,
+  "version": "0.3.1",
+  "updater_companion_version": "0.3.8",
+  "source_commit": "1dea2f72bef93b21a00395295d026ec5939d0471",
+  "publication_workflow_commit": "ccb5c6704b67183c13db19cc2d0717fe694af47a",
+  "note": "Audited Sarah Lite 0.3.1 publication requested; waiting for staging upload, R2 verification and stable manifest activation."
+}
