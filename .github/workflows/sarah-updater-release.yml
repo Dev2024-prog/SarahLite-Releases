@@ -8,11 +8,6 @@ on:
         required: true
         default: main
         type: string
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/updater-release-trigger.txt'
 
 permissions:
   contents: read
@@ -39,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Dev2024-prog/SarahDiagnostic
-          ref: ${{ inputs.source_ref || 'main' }}
+          ref: ${{ inputs.source_ref }}
           token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
           path: source
           fetch-depth: 1
