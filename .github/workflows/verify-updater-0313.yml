@@ -1,0 +1,43 @@
+name: Verify Sarah Updater 0.3.13 R2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/verify-updater-0313.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-r2:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Sarah Updater 0.3.13 on R2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifestUrl = 'https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
+          for ($attempt = 1; $attempt -le 30; $attempt++) {
+            try {
+              $url = "$manifestUrl?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+              $manifest = Invoke-RestMethod -Uri $url -Headers @{ 'Cache-Control' = 'no-cache' }
+              Write-Host "Attempt ${attempt}: latest version = $($manifest.version)"
+              if ($manifest.version -eq '0.3.13' -and
+                  $manifest.product -eq 'sarah-updater' -and
+                  $manifest.file_name -eq 'SarahUpdater-0.3.13-win-x64.zip' -and
+                  [long]$manifest.size -gt 0 -and
+                  [string]$manifest.sha256 -match '^[0-9a-f]{64}$' -and
+                  -not [string]::IsNullOrWhiteSpace([string]$manifest.signature)) {
+                $package = Invoke-WebRequest -Uri $manifest.download_url -Method Head -Headers @{ 'Cache-Control' = 'no-cache' }
+                if ([int]$package.StatusCode -eq 200) {
+                  Write-Host 'Sarah Updater 0.3.13 manifest and package are live on R2.'
+                  exit 0
+                }
+              }
+            } catch {
+              Write-Host "Attempt ${attempt} not ready: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 10
+          }
+          throw 'Sarah Updater 0.3.13 did not become live on R2 within the verification window.'
