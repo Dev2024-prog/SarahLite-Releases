@@ -8,6 +8,11 @@ on:
         required: true
         default: main
         type: string
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/updater-release-trigger.txt'
 
 permissions:
   contents: read
@@ -29,12 +34,13 @@ jobs:
       R2_PUBLIC_BASE_URL: ${{ vars.SARAH_R2_PUBLIC_BASE_URL }}
       R2_ACCESS_KEY_ID: ${{ secrets.SARAH_R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.SARAH_R2_SECRET_ACCESS_KEY }}
+      SOURCE_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || 'main' }}
     steps:
       - name: Checkout private SarahDiagnostic source
         uses: actions/checkout@v4
         with:
           repository: Dev2024-prog/SarahDiagnostic
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ env.SOURCE_REF }}
           token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
           path: source
           fetch-depth: 1
