@@ -23,7 +23,7 @@ jobs:
               $separator = if ($manifestUrl.Contains('?')) { '&' } else { '?' }
               $url = "$manifestUrl${separator}verify=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
               $manifest = Invoke-RestMethod -Uri $url -Headers @{ 'Cache-Control' = 'no-cache' }
-              Write-Host "Attempt $attempt: latest version = $($manifest.version)"
+              Write-Host "Attempt ${attempt}: latest version = $($manifest.version)"
               if ($manifest.version -eq '0.3.12' -and
                   $manifest.product -eq 'sarah-updater' -and
                   $manifest.file_name -eq 'SarahUpdater-0.3.12-win-x64.zip' -and
@@ -37,7 +37,7 @@ jobs:
                 }
               }
             } catch {
-              Write-Host "Attempt $attempt not ready: $($_.Exception.Message)"
+              Write-Host "Attempt ${attempt} not ready: $($_.Exception.Message)"
             }
             Start-Sleep -Seconds 15
           }
