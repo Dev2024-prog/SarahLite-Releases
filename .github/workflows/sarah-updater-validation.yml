@@ -1,0 +1,74 @@
+name: Sarah Updater source validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/updater-validation-trigger.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sarah-updater-source-validation
+  cancel-in-progress: true
+
+jobs:
+  validate-updater:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout private SarahDiagnostic source
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: main
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate updater icon
+        shell: pwsh
+        working-directory: source
+        run: ./updater/tools/New-SarahUpdaterIcon.ps1
+
+      - name: Restore and build updater
+        shell: pwsh
+        working-directory: source
+        run: |
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed' }
+
+      - name: Run updater core tests
+        shell: pwsh
+        working-directory: source
+        run: |
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Updater core tests failed' }
+
+      - name: Run automatic-license source contracts
+        shell: pwsh
+        working-directory: source
+        run: |
+          python tests/UpdaterAutomaticLicenseSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Automatic-license source contract failed' }
+          python tests/OneTimeInstallCodeSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'One-time install source contract failed' }
+
+      - name: Confirm validation
+        shell: pwsh
+        working-directory: source
+        run: |
+          $sha = git rev-parse HEAD
+          Write-Host "Sarah Updater validation succeeded for SarahDiagnostic $sha"
