@@ -6,6 +6,7 @@ on:
     branches:
       - main
     paths:
+      - '.github/workflows/sarah-setup-build.yml'
       - '.github/setup-build-trigger.txt'
 
 permissions:
@@ -49,6 +50,20 @@ jobs:
             throw 'Missing SARAH_RELEASE_PUBLIC_KEY_PEM_B64.'
           }
 
+      - name: Resolve Sarah Setup version
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$project = Get-Content 'updater/src/SarahSetup.Windows/SarahSetup.Windows.csproj'
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -First 1
+          $version = ([string]$version).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Sarah Setup project contains an invalid version: $version"
+          }
+          "SARAH_SETUP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Sarah Setup source version: $version"
+
       - name: Generate Sarah icon and embed release public key
         shell: pwsh
         working-directory: source
@@ -64,12 +79,25 @@ jobs:
             throw 'Embedded release public key is empty.'
           }
 
-      - name: Run Sarah Setup source contracts
+      - name: Run Setup and self-update source contracts
         shell: pwsh
         working-directory: source
         run: |
+          $ErrorActionPreference = 'Stop'
           python tests/SarahSetupSourceTests.py
           if ($LASTEXITCODE -ne 0) { throw 'Sarah Setup source contract failed.' }
+          python tests/UpdaterSelfUpdateSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater self-update source contract failed.' }
+
+      - name: Compile Windows updater solution
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
 
       - name: Publish single-file SarahSetup.exe
         shell: pwsh
@@ -78,6 +106,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $output = 'setup-release'
           Remove-Item $output -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
           dotnet publish updater/src/SarahSetup.Windows/SarahSetup.Windows.csproj `
             --configuration Release `
             --runtime win-x64 `
@@ -89,31 +118,40 @@ jobs:
             -p:DebugSymbols=false `
             --output $output
           if ($LASTEXITCODE -ne 0) { throw 'Sarah Setup publish failed.' }
+          Get-ChildItem $output -Filter '*.pdb' -ErrorAction SilentlyContinue | Remove-Item -Force
           $exe = Join-Path $output 'SarahSetup.exe'
           if (-not (Test-Path $exe -PathType Leaf) -or (Get-Item $exe).Length -le 0) {
             throw 'SarahSetup.exe was not produced.'
           }
-          Get-ChildItem $output -File | ForEach-Object {
-            Write-Host ("Output: {0} ({1:N0} bytes)" -f $_.Name, $_.Length)
+
+          $unexpectedExecutables = @(Get-ChildItem $output -File -Filter '*.exe' | Where-Object { $_.Name -ne 'SarahSetup.exe' })
+          if ($unexpectedExecutables.Count -gt 0) {
+            throw "Unexpected executable(s) in clean Setup output: $($unexpectedExecutables.Name -join ', ')"
           }
+
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
           $size = (Get-Item $exe).Length
+          $hashFile = Join-Path $output 'SarahSetup.sha256'
+          Set-Content -Path $hashFile -Value "$hash  SarahSetup.exe" -Encoding ascii
           "SARAH_SETUP_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "SARAH_SETUP_SIZE=$size" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "SarahSetup.exe SHA256: $hash"
+          Write-Host "SarahSetup.exe size: $size bytes"
 
-      - name: Upload SarahSetup.exe artifact
+      - name: Upload versioned SarahSetup artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SarahSetup-win-x64
-          path: source/setup-release/SarahSetup.exe
+          name: SarahSetup-${{ env.SARAH_SETUP_VERSION }}-win-x64
+          path: |
+            source/setup-release/SarahSetup.exe
+            source/setup-release/SarahSetup.sha256
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
           compression-level: 0
 
       - name: Build summary
         shell: pwsh
         run: |
-          Write-Host "SarahSetup.exe created successfully."
+          Write-Host "SarahSetup $env:SARAH_SETUP_VERSION created successfully."
           Write-Host "Size: $env:SARAH_SETUP_SIZE bytes"
           Write-Host "SHA256: $env:SARAH_SETUP_SHA256"
