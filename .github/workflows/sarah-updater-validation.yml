@@ -46,7 +46,7 @@ jobs:
         working-directory: source
         run: ./updater/tools/New-SarahUpdaterIcon.ps1
 
-      - name: Restore and build updater
+      - name: Restore and build updater and setup
         shell: pwsh
         working-directory: source
         run: |
@@ -62,7 +62,7 @@ jobs:
           dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
           if ($LASTEXITCODE -ne 0) { throw 'Updater core tests failed' }
 
-      - name: Run updater source contracts
+      - name: Run updater and setup source contracts
         shell: pwsh
         working-directory: source
         run: |
@@ -72,10 +72,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Self-update source contract failed' }
           python tests/OneTimeInstallCodeSourceTests.py
           if ($LASTEXITCODE -ne 0) { throw 'One-time install source contract failed' }
+          python tests/SarahSetupSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Setup source contract failed' }
 
       - name: Confirm validation
         shell: pwsh
         working-directory: source
         run: |
           $sha = git rev-parse HEAD
-          Write-Host "Sarah Updater validation succeeded for SarahDiagnostic $sha"
+          Write-Host "Sarah Updater + Setup validation succeeded for SarahDiagnostic $sha"
