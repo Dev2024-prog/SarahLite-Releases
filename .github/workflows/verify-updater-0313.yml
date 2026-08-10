@@ -25,7 +25,7 @@ jobs:
           $manifestUrl = 'https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
           for ($attempt = 1; $attempt -le 30; $attempt++) {
             try {
-              $url = "$manifestUrl?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+              $url = "${manifestUrl}?verify=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
               $manifest = Invoke-RestMethod -Uri $url -Headers @{ 'Cache-Control' = 'no-cache' }
               Write-Host "Attempt ${attempt}: latest version = $($manifest.version)"
               if ($manifest.version -eq '0.3.13' -and
