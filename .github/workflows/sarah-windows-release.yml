@@ -1,0 +1,268 @@
+name: Sarah Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/windows-release-trigger.txt'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/sarah-windows-release.yml'
+      - '.github/windows-release-trigger.txt'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sarah-windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-verify-release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SARAH_RELEASE_PUBLIC_KEY_PEM_B64: ${{ secrets.SARAH_RELEASE_PUBLIC_KEY_PEM_B64 }}
+      SARAH_UPDATER_LATEST_MANIFEST_URL: https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json
+    steps:
+      - name: Checkout private SarahDiagnostic source
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: main
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate release configuration
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:SARAH_RELEASE_PUBLIC_KEY_PEM_B64)) {
+            throw 'Missing SARAH_RELEASE_PUBLIC_KEY_PEM_B64.'
+          }
+
+      - name: Resolve Windows component versions
+        id: versions
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$setupProject = Get-Content 'updater/src/SarahSetup.Windows/SarahSetup.Windows.csproj'
+          [xml]$updaterProject = Get-Content 'updater/src/SarahUpdater.Windows/SarahUpdater.Windows.csproj'
+          $setupVersion = ([string]$setupProject.Project.PropertyGroup.Version).Trim()
+          $updaterVersion = ([string]$updaterProject.Project.PropertyGroup.Version).Trim()
+          if ($setupVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid Sarah Setup version: $setupVersion" }
+          if ($updaterVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid Sarah Updater version: $updaterVersion" }
+          "SARAH_SETUP_VERSION=$setupVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SARAH_UPDATER_VERSION=$updaterVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "setup=$setupVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "updater=$updaterVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Sarah Setup: $setupVersion"
+          Write-Host "Sarah Updater: $updaterVersion"
+
+      - name: Require intended release versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SARAH_SETUP_VERSION -ne '0.1.3') {
+            throw "This release trigger expects Sarah Setup 0.1.3, source is $env:SARAH_SETUP_VERSION."
+          }
+          if ($env:SARAH_UPDATER_VERSION -ne '0.3.14') {
+            throw "This release trigger expects Sarah Updater 0.3.14, source is $env:SARAH_UPDATER_VERSION."
+          }
+
+      - name: Generate Sarah icon and embed release public key
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./updater/tools/New-SarahUpdaterIcon.ps1
+          $assetDir = 'updater/src/SarahSetup.Windows/Assets'
+          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+          [IO.File]::WriteAllBytes(
+            (Join-Path $assetDir 'release-public.pem'),
+            [Convert]::FromBase64String($env:SARAH_RELEASE_PUBLIC_KEY_PEM_B64))
+          if ((Get-Item (Join-Path $assetDir 'release-public.pem')).Length -le 0) {
+            throw 'Embedded release public key is empty.'
+          }
+
+      - name: Run Setup and Updater contracts
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tests/SarahSetupSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Setup source contract failed.' }
+          python tests/UpdaterSelfUpdateSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater self-update source contract failed.' }
+          if (Test-Path 'tests/WindowsUsbWriteIsolationSourceTests.py') {
+            python tests/WindowsUsbWriteIsolationSourceTests.py
+            if ($LASTEXITCODE -ne 0) { throw 'Windows USB write isolation contract failed.' }
+          }
+
+      - name: Build and test Windows updater solution
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater core tests failed.' }
+
+      - name: Build clean SarahSetup.exe
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = 'windows-release/setup'
+          Remove-Item 'windows-release' -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          dotnet publish updater/src/SarahSetup.Windows/SarahSetup.Windows.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Setup publish failed.' }
+          Get-ChildItem $output -Filter '*.pdb' -ErrorAction SilentlyContinue | Remove-Item -Force
+          $exe = Join-Path $output 'SarahSetup.exe'
+          if (-not (Test-Path $exe -PathType Leaf) -or (Get-Item $exe).Length -le 0) {
+            throw 'SarahSetup.exe was not produced.'
+          }
+          $unexpected = @(Get-ChildItem $output -File -Filter '*.exe' | Where-Object Name -ne 'SarahSetup.exe')
+          if ($unexpected.Count -gt 0) {
+            throw "Unexpected executable(s) in clean Setup output: $($unexpected.Name -join ', ')"
+          }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path (Join-Path $output 'SarahSetup.sha256') -Value "$hash  SarahSetup.exe" -Encoding ascii
+
+      - name: Verify and download public Sarah Updater latest
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = Invoke-RestMethod -Uri $env:SARAH_UPDATER_LATEST_MANIFEST_URL -TimeoutSec 30
+          if ([string]$manifest.version -ne $env:SARAH_UPDATER_VERSION) {
+            throw "R2 latest is Sarah Updater $($manifest.version), expected $env:SARAH_UPDATER_VERSION."
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$manifest.download_url)) {
+            throw 'R2 latest manifest has no download_url.'
+          }
+          $assets = 'windows-release/assets'
+          New-Item -ItemType Directory -Force -Path $assets | Out-Null
+          $updaterZip = Join-Path $assets "SarahUpdater-$env:SARAH_UPDATER_VERSION-win-x64.zip"
+          Invoke-WebRequest -Uri ([string]$manifest.download_url) -OutFile $updaterZip -TimeoutSec 180
+          if (-not (Test-Path $updaterZip -PathType Leaf) -or (Get-Item $updaterZip).Length -le 0) {
+            throw 'Public Sarah Updater package download failed.'
+          }
+          if ($manifest.size -and [long]$manifest.size -ne (Get-Item $updaterZip).Length) {
+            throw "Updater package size mismatch: $((Get-Item $updaterZip).Length) != $($manifest.size)."
+          }
+          $updaterHash = (Get-FileHash $updaterZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($manifest.sha256 -and $updaterHash -ne ([string]$manifest.sha256).ToLowerInvariant()) {
+            throw 'Public Sarah Updater package SHA-256 mismatch.'
+          }
+          Set-Content -Path (Join-Path $assets "SarahUpdater-$env:SARAH_UPDATER_VERSION-win-x64.sha256") `
+            -Value "$updaterHash  SarahUpdater-$env:SARAH_UPDATER_VERSION-win-x64.zip" -Encoding ascii
+
+      - name: Prepare combined release assets
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = 'windows-release/assets'
+          Copy-Item 'windows-release/setup/SarahSetup.exe' (Join-Path $assets 'SarahSetup.exe') -Force
+          Copy-Item 'windows-release/setup/SarahSetup.sha256' (Join-Path $assets 'SarahSetup.sha256') -Force
+          $setupZip = Join-Path $assets "SarahSetup-$env:SARAH_SETUP_VERSION-win-x64.zip"
+          Compress-Archive `
+            -Path (Join-Path $assets 'SarahSetup.exe'),(Join-Path $assets 'SarahSetup.sha256') `
+            -DestinationPath $setupZip `
+            -CompressionLevel Optimal
+          if (-not (Test-Path $setupZip -PathType Leaf) -or (Get-Item $setupZip).Length -le 0) {
+            throw 'Sarah Setup ZIP was not created.'
+          }
+
+          $notes = @"
+# Sarah Windows telepítési csomag
+
+- Sarah Setup: $env:SARAH_SETUP_VERSION
+- Sarah Updater: $env:SARAH_UPDATER_VERSION
+- Platform: Windows x64
+
+A Setup a publikus, aláírt R2 latest manifestből telepíti a Sarah Updatert. A release elkészítése előtt a workflow ellenőrzi, hogy a publikus latest valóban a $env:SARAH_UPDATER_VERSION verzióra mutat, majd SHA-256 alapján ellenőrzi a letöltött Updater csomagot.
+
+A $env:SARAH_UPDATER_VERSION tartalmazza a pendrive nyers ISO-írás előtti boot/metaadat takarítását, valamint a korábbi self-update fájlzár-védelmeket. A fizikai USB boot elfogadási teszt továbbra is külön hardveres ellenőrzés.
+"@
+          Set-Content -Path 'windows-release/RELEASE_NOTES.md' -Value $notes -Encoding utf8
+
+      - name: Upload combined validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sarah-Windows-Setup-${{ steps.versions.outputs.setup }}-Updater-${{ steps.versions.outputs.updater }}
+          path: source/windows-release/assets/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "windows-setup-v$env:SARAH_SETUP_VERSION-updater-v$env:SARAH_UPDATER_VERSION"
+          $title = "Sarah Setup $env:SARAH_SETUP_VERSION + Sarah Updater $env:SARAH_UPDATER_VERSION"
+          $assets = Get-ChildItem 'windows-release/assets' -File | ForEach-Object { $_.FullName }
+          if (-not $assets) { throw 'No release assets found.' }
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw 'Existing GitHub Release asset update failed.' }
+            gh release edit $tag --title $title --notes-file 'windows-release/RELEASE_NOTES.md' --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw 'Existing GitHub Release metadata update failed.' }
+          }
+          else {
+            gh release create $tag @assets `
+              --target main `
+              --title $title `
+              --notes-file 'windows-release/RELEASE_NOTES.md' `
+              --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub Release creation failed.' }
+          }
+
+      - name: Release summary
+        shell: pwsh
+        run: |
+          Write-Host "Sarah Setup $env:SARAH_SETUP_VERSION"
+          Write-Host "Sarah Updater $env:SARAH_UPDATER_VERSION"
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            Write-Host 'Validation build completed; GitHub Release publishing skipped on PR.'
+          }
+          else {
+            Write-Host 'GitHub Release published successfully.'
+          }
