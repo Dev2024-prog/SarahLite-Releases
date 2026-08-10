@@ -1,0 +1,34 @@
+name: Verify Sarah Updater 0.3.14 R2
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/verify-updater-0.3.14-r2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify public latest manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
+          for attempt in $(seq 1 20); do
+            json="$(curl --fail --silent --show-error --location --no-cache "$url" || true)"
+            version="$(printf '%s' "$json" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data.get("version", ""))' 2>/dev/null || true)"
+            echo "Attempt $attempt: version=$version"
+            if [ "$version" = '0.3.14' ]; then
+              printf '%s\n' "$json"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'R2 latest manifest did not reach Sarah Updater 0.3.14 in time.' >&2
+          exit 1
