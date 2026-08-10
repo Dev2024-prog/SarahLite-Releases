@@ -1,0 +1,768 @@
+name: Sarah Lite production release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Sarah Lite version, for example 0.3.1 or 0.3.1-preview.1'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel'
+        required: true
+        default: preview
+        type: choice
+        options:
+          - preview
+          - stable
+      source_ref:
+        description: 'Private SarahDiagnostic branch, tag or commit to build'
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sarah-lite-production-release
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPOSITORY: Dev2024-prog/SarahDiagnostic
+  RELEASE_REPOSITORY: Dev2024-prog/SarahLite-Releases
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      source_sha: ${{ steps.source.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_TOKEN: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+    steps:
+      - name: Validate release request
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SOURCE_TOKEN:-}" ]] || {
+            echo "Missing SARAH_SOURCE_REPO_TOKEN in the public release repository." >&2
+            exit 1
+          }
+          [[ "${INPUT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]] || {
+            echo "Invalid Sarah Lite version: ${INPUT_VERSION}" >&2
+            exit 1
+          }
+          [[ "${INPUT_CHANNEL}" == "stable" || "${INPUT_CHANNEL}" == "preview" ]] || {
+            echo "Invalid release channel: ${INPUT_CHANNEL}" >&2
+            exit 1
+          }
+          [[ -n "${INPUT_SOURCE_REF}" ]] || {
+            echo "source_ref must not be empty." >&2
+            exit 1
+          }
+
+      - name: Resolve private source snapshot
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: source
+        name: Pin private source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git -C source rev-parse HEAD)"
+          [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Could not resolve a valid SarahDiagnostic commit SHA." >&2
+            exit 1
+          }
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "Pinned SarahDiagnostic source: ${sha}"
+
+      - id: release
+        name: Resolve release metadata
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          [[ "${CHANNEL}" == "preview" ]] && prerelease=true
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "channel=${CHANNEL}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare draft GitHub Release metadata
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" >/dev/null 2>&1; then
+            is_draft="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPOSITORY}" --json isDraft --jq '.isDraft')"
+            if [[ "${is_draft}" != "true" ]]; then
+              echo "Release ${RELEASE_TAG} is already published and immutable." >&2
+              exit 1
+            fi
+            echo "Reusing existing draft release ${RELEASE_TAG}."
+          else
+            args=(--draft)
+            [[ "${PRERELEASE}" == "true" ]] && args+=(--prerelease)
+            gh release create "${RELEASE_TAG}" \
+              --repo "${RELEASE_REPOSITORY}" \
+              --title "Sarah Lite ${VERSION}" \
+              --notes "Sarah Lite ${VERSION} (${CHANNEL}). Large release binaries are delivered from Cloudflare R2; this GitHub Release stores signed metadata and release history. Source snapshot: ${SOURCE_SHA}." \
+              "${args[@]}"
+          fi
+
+  windows-updater:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: source
+    outputs:
+      updater_version: ${{ steps.updater_version.outputs.version }}
+      updater_sha256: ${{ steps.upload.outputs.sha256 }}
+      updater_size: ${{ steps.upload.outputs.size }}
+      updater_url: ${{ steps.upload.outputs.url }}
+      updater_key: ${{ steps.upload.outputs.key }}
+      updater_file_name: ${{ steps.upload.outputs.file_name }}
+    env:
+      SARAH_UPDATER_AUTH_URL: ${{ vars.SARAH_UPDATER_AUTH_URL }}
+      SARAH_RELEASE_PUBLIC_KEY_PEM_B64: ${{ secrets.SARAH_RELEASE_PUBLIC_KEY_PEM_B64 }}
+      R2_ACCOUNT_ID: ${{ vars.SARAH_R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.SARAH_R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.SARAH_R2_PUBLIC_BASE_URL }}
+      R2_ACCESS_KEY_ID: ${{ secrets.SARAH_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.SARAH_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout pinned private source
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate updater and R2 configuration
+        shell: pwsh
+        run: |
+          foreach ($name in @(
+            'SARAH_UPDATER_AUTH_URL','SARAH_RELEASE_PUBLIC_KEY_PEM_B64',
+            'R2_ACCOUNT_ID','R2_BUCKET','R2_PUBLIC_BASE_URL',
+            'R2_ACCESS_KEY_ID','R2_SECRET_ACCESS_KEY')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing updater/R2 configuration: $name"
+            }
+          }
+          if (-not $env:SARAH_UPDATER_AUTH_URL.StartsWith('https://')) {
+            throw 'SARAH_UPDATER_AUTH_URL must use HTTPS.'
+          }
+          if (-not $env:R2_PUBLIC_BASE_URL.StartsWith('https://')) {
+            throw 'SARAH_R2_PUBLIC_BASE_URL must use HTTPS.'
+          }
+
+      - id: updater_version
+        name: Read updater source version
+        shell: pwsh
+        run: |
+          $match = Select-Xml `
+            -Path 'updater/src/SarahUpdater.Windows/SarahUpdater.Windows.csproj' `
+            -XPath '//Project/PropertyGroup/Version' |
+            Select-Object -First 1
+          if ($null -eq $match) { throw 'Updater project Version element is missing.' }
+          $version = $match.Node.InnerText.Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[.-][A-Za-z0-9._-]+)?$') {
+            throw "Invalid updater version: $version"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "UPDATER_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Sarah Updater version: $version"
+
+      - name: Install R2 publisher dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check boto3 requests
+
+      - name: Generate Sarah Updater icon
+        shell: pwsh
+        run: ./updater/tools/New-SarahUpdaterIcon.ps1
+
+      - name: Build and test updater
+        shell: pwsh
+        run: |
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater tests failed.' }
+
+      - name: Package self-contained Windows updater
+        shell: pwsh
+        run: |
+          $output = 'release-output/updater'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          dotnet publish updater/src/SarahUpdater.Windows/SarahUpdater.Windows.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:Version=$env:UPDATER_VERSION `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater publish failed.' }
+          Get-ChildItem $output -Filter '*.pdb' -ErrorAction SilentlyContinue | Remove-Item -Force
+          [IO.File]::WriteAllBytes(
+            (Join-Path $output 'release-public.pem'),
+            [Convert]::FromBase64String($env:SARAH_RELEASE_PUBLIC_KEY_PEM_B64))
+          @{
+            auth_url = $env:SARAH_UPDATER_AUTH_URL.Trim()
+            release_public_key_file = 'release-public.pem'
+          } | ConvertTo-Json | Set-Content -Path (Join-Path $output 'updater-config.json') -Encoding UTF8
+          $zip = "release-output/SarahUpdater-$env:UPDATER_VERSION-win-x64.zip"
+          Compress-Archive -Path "$output/*" -DestinationPath $zip -CompressionLevel Optimal
+          if (-not (Test-Path $zip -PathType Leaf) -or (Get-Item $zip).Length -le 0) {
+            throw 'Updater ZIP was not created correctly.'
+          }
+
+      - id: upload
+        name: Upload freshly built updater directly to R2
+        shell: pwsh
+        run: |
+          $file = "release-output/SarahUpdater-$env:UPDATER_VERSION-win-x64.zip"
+          $key = "updater/$env:UPDATER_VERSION/SarahUpdater-$env:UPDATER_VERSION-win-x64.zip"
+          python scripts/upload-built-artifact-r2.py `
+            --file $file `
+            --key $key `
+            --content-type application/zip `
+            --public-verify
+          if ($LASTEXITCODE -ne 0) { throw 'Direct updater R2 upload failed.' }
+
+  full-iso:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: source
+    outputs:
+      iso_sha256: ${{ steps.upload.outputs.sha256 }}
+      iso_size: ${{ steps.upload.outputs.size }}
+      iso_url: ${{ steps.upload.outputs.url }}
+      iso_key: ${{ steps.upload.outputs.key }}
+      iso_file_name: ${{ steps.upload.outputs.file_name }}
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SARAH_LICENSE_PUBLIC_KEY_PEM_B64: ${{ secrets.SARAH_LICENSE_PUBLIC_KEY_PEM_B64 }}
+      SARAH_SUPABASE_URL: ${{ secrets.SARAH_SUPABASE_URL }}
+      SARAH_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SARAH_SUPABASE_PUBLISHABLE_KEY }}
+      R2_ACCOUNT_ID: ${{ vars.SARAH_R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.SARAH_R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.SARAH_R2_PUBLIC_BASE_URL }}
+      R2_ACCESS_KEY_ID: ${{ secrets.SARAH_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.SARAH_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout pinned private source
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate licensed ISO and R2 configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            SARAH_LICENSE_PUBLIC_KEY_PEM_B64 SARAH_SUPABASE_URL SARAH_SUPABASE_PUBLISHABLE_KEY \
+            R2_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            [[ -n "${!name:-}" ]] || { echo "Missing required ISO/R2 configuration: ${name}" >&2; exit 1; }
+          done
+          [[ "${R2_PUBLIC_BASE_URL}" == https://* ]] || {
+            echo "SARAH_R2_PUBLIC_BASE_URL must use HTTPS." >&2
+            exit 1
+          }
+
+      - name: Install R2 publisher dependencies
+        shell: bash
+        run: python -m pip install --disable-pip-version-check boto3 requests
+
+      - name: Prepare complete licensed build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release-secrets release-output live-build/config/includes.binary
+          printf '%s' "${SARAH_LICENSE_PUBLIC_KEY_PEM_B64}" | base64 --decode > .release-secrets/license-public.pem
+          chmod 0644 .release-secrets/license-public.pem
+          printf '%s\n' "${VERSION}" > live-build/config/includes.binary/SARAH_VERSION.TXT
+          cat > scripts/build-config.local.sh <<'EOF'
+          LIVE_BUILD_DIR="${REPO_ROOT}/live-build"
+          SARAH_BUILD_DIR="${REPO_ROOT}/out/build/live-release"
+          SARAH_CONFIGURE_COMMAND=(
+            cmake -S "${REPO_ROOT}" -B "${SARAH_BUILD_DIR}"
+            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          )
+          SARAH_BUILD_COMMAND=(
+            cmake --build "${SARAH_BUILD_DIR}" --target sarah-lite --parallel 2
+          )
+          FULL_CLEAN_COMMAND=(lb clean)
+          FULL_BUILD_COMMAND=(lb build)
+          SARAH_ARTIFACTS=(
+            "${SARAH_BUILD_DIR}/sarah-lite|usr/local/lib/sarah/base/sarah-lite|0755"
+            "${REPO_ROOT}/runtime/sarah-launcher.sh|usr/local/sbin/sarah-launcher|0755"
+            "${REPO_ROOT}/assets/ui/mouse-diagram-clean.png|usr/share/sarah/assets/ui/mouse-diagram-clean.png|0644"
+          )
+          SARAH_LICENSE_REQUIRED=1
+          SARAH_LICENSE_PUBLIC_KEY_FILE="${REPO_ROOT}/.release-secrets/license-public.pem"
+          SARAH_SUPABASE_URL="${SARAH_SUPABASE_URL}"
+          SARAH_SUPABASE_PUBLISHABLE_KEY="${SARAH_SUPABASE_PUBLISHABLE_KEY}"
+          SARAH_SYMLINKS=(
+            "../lib/sarah/base/sarah-lite|usr/local/bin/sarah-lite"
+          )
+          ISO_GLOB="*.hybrid.iso"
+          SARAH_DATA_SIZE_MIB=256
+          ALLOW_FULL_CLEAN=1
+          EOF
+
+      - name: Build complete ISO in privileged Debian Trixie
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            -v "${GITHUB_WORKSPACE}/source:/workspace" \
+            -w /workspace \
+            -e SARAH_SUPABASE_URL \
+            -e SARAH_SUPABASE_PUBLISHABLE_KEY \
+            debian:trixie-slim bash -lc '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                ca-certificates git sudo build-essential cmake ninja-build python3 \
+                libsdl3-dev libsdl3-ttf-dev libsdl3-image-dev \
+                live-build debootstrap xorriso squashfs-tools \
+                isolinux syslinux-common grub-efi-amd64-bin grub-pc-bin \
+                dosfstools e2fsprogs fdisk util-linux mount openssl wget curl \
+                file mtools
+              git config --global --add safe.directory /workspace
+              chmod +x scripts/*.sh live-build/auto/*
+              ./scripts/build-full.sh
+            '
+
+      - name: Package ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_iso="live-build/live-image-amd64.hybrid.iso"
+          target_iso="release-output/SarahLite-${VERSION}-amd64.iso"
+          test -s "${source_iso}"
+          cp --sparse=always "${source_iso}" "${target_iso}"
+          sha256sum "${target_iso}" > "${target_iso}.sha256"
+          rm -rf .release-secrets scripts/build-config.local.sh live-build/config/includes.binary/SARAH_VERSION.TXT
+
+      - id: upload
+        name: Upload freshly built ISO directly to R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/upload-built-artifact-r2.py \
+            --file "release-output/SarahLite-${VERSION}-amd64.iso" \
+            --key "lite/${VERSION}/SarahLite-${VERSION}-amd64.iso" \
+            --content-type application/octet-stream \
+            --public-verify
+
+      - name: Upload ISO checksum to R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/upload-built-artifact-r2.py \
+            --file "release-output/SarahLite-${VERSION}-amd64.iso.sha256" \
+            --key "lite/${VERSION}/SarahLite-${VERSION}-amd64.iso.sha256" \
+            --content-type text/plain
+
+  publish-release:
+    needs:
+      - prepare
+      - windows-updater
+      - full-iso
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: source
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      CHANNEL: ${{ needs.prepare.outputs.channel }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+      UPDATER_VERSION: ${{ needs.windows-updater.outputs.updater_version }}
+      UPDATER_SHA256: ${{ needs.windows-updater.outputs.updater_sha256 }}
+      UPDATER_SIZE: ${{ needs.windows-updater.outputs.updater_size }}
+      UPDATER_URL: ${{ needs.windows-updater.outputs.updater_url }}
+      UPDATER_KEY: ${{ needs.windows-updater.outputs.updater_key }}
+      UPDATER_FILE_NAME: ${{ needs.windows-updater.outputs.updater_file_name }}
+      ISO_SHA256: ${{ needs.full-iso.outputs.iso_sha256 }}
+      ISO_SIZE: ${{ needs.full-iso.outputs.iso_size }}
+      ISO_URL: ${{ needs.full-iso.outputs.iso_url }}
+      ISO_KEY: ${{ needs.full-iso.outputs.iso_key }}
+      ISO_FILE_NAME: ${{ needs.full-iso.outputs.iso_file_name }}
+      GH_TOKEN: ${{ github.token }}
+      SARAH_RELEASE_PRIVATE_KEY_PEM_B64: ${{ secrets.SARAH_RELEASE_PRIVATE_KEY_PEM_B64 }}
+      SARAH_BUILD_ADMIN_URL: ${{ secrets.SARAH_BUILD_ADMIN_URL }}
+      SARAH_BUILD_ADMIN_TOKEN: ${{ secrets.SARAH_BUILD_ADMIN_TOKEN }}
+      R2_ACCOUNT_ID: ${{ vars.SARAH_R2_ACCOUNT_ID }}
+      R2_BUCKET: ${{ vars.SARAH_R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.SARAH_R2_PUBLIC_BASE_URL }}
+      R2_ACCESS_KEY_ID: ${{ secrets.SARAH_R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.SARAH_R2_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout pinned private source for release helpers
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate final publishing credentials and build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            SARAH_RELEASE_PRIVATE_KEY_PEM_B64 SARAH_BUILD_ADMIN_URL SARAH_BUILD_ADMIN_TOKEN \
+            R2_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY \
+            VERSION CHANNEL SOURCE_SHA ISO_SHA256 ISO_SIZE ISO_URL ISO_KEY ISO_FILE_NAME \
+            UPDATER_VERSION UPDATER_SHA256 UPDATER_SIZE UPDATER_URL UPDATER_KEY UPDATER_FILE_NAME; do
+            [[ -n "${!name:-}" ]] || { echo "Missing final release value: ${name}" >&2; exit 1; }
+          done
+          [[ "${ISO_URL}" == "${R2_PUBLIC_BASE_URL%/}/"* ]] || {
+            echo "ISO URL is not an R2 public URL." >&2
+            exit 1
+          }
+          [[ "${UPDATER_URL}" == "${R2_PUBLIC_BASE_URL%/}/"* ]] || {
+            echo "Updater URL is not an R2 public URL." >&2
+            exit 1
+          }
+
+      - name: Install R2 publisher dependencies
+        shell: bash
+        run: python -m pip install --disable-pip-version-check boto3 requests
+
+      - name: Generate and sign R2 release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          python - "${VERSION}" "${ISO_FILE_NAME}" "${ISO_URL}" "${ISO_SIZE}" "${ISO_SHA256}" <<'PY'
+          import sys
+          from pathlib import Path
+          version, file_name, url, size, sha256 = sys.argv[1:]
+          lines = [
+              "format=1",
+              "edition=lite",
+              f"version={version}",
+              f"file_name={file_name}",
+              f"download_url={url}",
+              f"size={size}",
+              f"sha256={sha256.lower()}",
+              "minimum_updater_version=0.3.0",
+              "signature_algorithm=RSA-PSS-SHA256",
+          ]
+          Path("release-assets/manifest-payload.txt").write_bytes(
+              ("\n".join(lines) + "\n").encode("utf-8"))
+          PY
+          printf '%s' "${SARAH_RELEASE_PRIVATE_KEY_PEM_B64}" | base64 --decode > release-private.pem
+          chmod 0600 release-private.pem
+          openssl dgst -sha256 \
+            -sigopt rsa_padding_mode:pss \
+            -sigopt rsa_pss_saltlen:32 \
+            -sign release-private.pem \
+            -out release-assets/manifest.sig \
+            release-assets/manifest-payload.txt
+          signature="$(base64 -w0 release-assets/manifest.sig)"
+          python - \
+            "${VERSION}" "${ISO_FILE_NAME}" "${ISO_URL}" "${ISO_SIZE}" "${ISO_SHA256}" "${signature}" <<'PY'
+          import json
+          import sys
+          version, file_name, url, size, sha256, signature = sys.argv[1:]
+          manifest = {
+              "format": 1,
+              "edition": "lite",
+              "version": version,
+              "file_name": file_name,
+              "download_url": url,
+              "size": int(size),
+              "sha256": sha256.lower(),
+              "minimum_updater_version": "0.3.0",
+              "signature_algorithm": "RSA-PSS-SHA256",
+              "signature": signature,
+          }
+          with open("release-assets/release-manifest.json", "w", encoding="utf-8") as handle:
+              json.dump(manifest, handle, ensure_ascii=False, indent=2)
+              handle.write("\n")
+          PY
+          manifest_sha="$(sha256sum release-assets/release-manifest.json | awk '{print $1}')"
+          printf '%s  %s\n%s  %s\n%s  release-manifest.json\n' \
+            "${ISO_SHA256}" "${ISO_FILE_NAME}" \
+            "${UPDATER_SHA256}" "${UPDATER_FILE_NAME}" \
+            "${manifest_sha}" > release-assets/SHA256SUMS.txt
+          rm -f release-private.pem release-assets/manifest.sig release-assets/manifest-payload.txt
+
+      - name: Build latest metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - \
+            "${VERSION}" "${ISO_URL}" "${ISO_SHA256}" "${ISO_SIZE}" \
+            "${UPDATER_VERSION}" "${UPDATER_URL}" "${UPDATER_SHA256}" "${UPDATER_SIZE}" \
+            "${SOURCE_SHA}" <<'PY'
+          import json
+          import os
+          import sys
+          from datetime import datetime, timezone
+          (
+              version, iso_url, iso_sha, iso_size,
+              updater_version, updater_url, updater_sha, updater_size,
+              source_sha
+          ) = sys.argv[1:]
+          now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+          latest = {
+              "version": version,
+              "manifest_url": None,
+              "download_url": iso_url,
+              "sha256": iso_sha.lower(),
+              "size": int(iso_size),
+              "source_sha": source_sha,
+              "updater": {
+                  "version": updater_version,
+                  "download_url": updater_url,
+                  "sha256": updater_sha.lower(),
+                  "size": int(updater_size),
+              },
+              "published_at": now,
+          }
+          public_base = os.environ["R2_PUBLIC_BASE_URL"].rstrip("/")
+          updater_latest = {
+              "version": updater_version,
+              "file_name": "SarahUpdater-win-x64.zip",
+              "download_url": updater_url,
+              "latest_download_url": f"{public_base}/updater/latest/SarahUpdater-win-x64.zip",
+              "sha256": updater_sha.lower(),
+              "size": int(updater_size),
+              "platform": "win-x64",
+              "published_at": now,
+          }
+          with open("release-assets/latest.json", "w", encoding="utf-8") as handle:
+              json.dump(latest, handle, ensure_ascii=False, indent=2)
+              handle.write("\n")
+          with open("release-assets/updater-latest.json", "w", encoding="utf-8") as handle:
+              json.dump(updater_latest, handle, ensure_ascii=False, indent=2)
+              handle.write("\n")
+          PY
+
+      - name: Upload signed versioned R2 metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/release-manifest.json \
+            --key "lite/${VERSION}/release-manifest.json" \
+            --content-type application/json \
+            --allow-overwrite \
+            --public-verify
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/SHA256SUMS.txt \
+            --key "lite/${VERSION}/SHA256SUMS.txt" \
+            --content-type text/plain \
+            --allow-overwrite
+
+      - name: Publish channel latest aliases
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${CHANNEL}" == "stable" ]]; then
+            latest_prefix="lite/latest"
+          else
+            latest_prefix="lite/preview/latest"
+          fi
+          manifest_url="${R2_PUBLIC_BASE_URL%/}/${latest_prefix}/release-manifest.json"
+          python - "${manifest_url}" <<'PY'
+          import json
+          import sys
+          path = "release-assets/latest.json"
+          with open(path, "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          payload["manifest_url"] = sys.argv[1]
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, ensure_ascii=False, indent=2)
+              handle.write("\n")
+          PY
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/release-manifest.json \
+            --key "${latest_prefix}/release-manifest.json" \
+            --content-type application/json \
+            --cache-control no-cache \
+            --allow-overwrite
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/SHA256SUMS.txt \
+            --key "${latest_prefix}/SHA256SUMS.txt" \
+            --content-type text/plain \
+            --cache-control no-cache \
+            --allow-overwrite
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/latest.json \
+            --key "${latest_prefix}/latest.json" \
+            --content-type application/json \
+            --cache-control no-cache \
+            --allow-overwrite
+          echo "LATEST_PREFIX=${latest_prefix}" >> "${GITHUB_ENV}"
+
+      - name: Publish stable updater latest alias
+        if: ${{ needs.prepare.outputs.channel == 'stable' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+          account = os.environ["R2_ACCOUNT_ID"]
+          bucket = os.environ["R2_BUCKET"]
+          source_key = os.environ["UPDATER_KEY"]
+          sha = os.environ["UPDATER_SHA256"].lower()
+          client = boto3.client(
+              "s3",
+              endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+          )
+          client.copy_object(
+              Bucket=bucket,
+              Key="updater/latest/SarahUpdater-win-x64.zip",
+              CopySource={"Bucket": bucket, "Key": source_key},
+              MetadataDirective="REPLACE",
+              Metadata={"sha256": sha},
+              ContentType="application/zip",
+              CacheControl="public, max-age=300",
+          )
+          head = client.head_object(Bucket=bucket, Key="updater/latest/SarahUpdater-win-x64.zip")
+          if int(head.get("ContentLength") or 0) != int(os.environ["UPDATER_SIZE"]):
+              raise RuntimeError("Updater latest R2 size verification failed")
+          if (head.get("Metadata") or {}).get("sha256", "").lower() != sha:
+              raise RuntimeError("Updater latest R2 hash metadata verification failed")
+          PY
+          python scripts/upload-built-artifact-r2.py \
+            --file release-assets/updater-latest.json \
+            --key "updater/latest/latest.json" \
+            --content-type application/json \
+            --cache-control no-cache \
+            --allow-overwrite
+
+      - name: Verify public latest metadata and updater alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest_url="${R2_PUBLIC_BASE_URL%/}/${LATEST_PREFIX}/latest.json"
+          [[ "$(curl --fail --silent --show-error --location "${latest_url}" | jq -r '.version')" == "${VERSION}" ]] || {
+            echo "R2 latest metadata version verification failed." >&2
+            exit 1
+          }
+          if [[ "${CHANNEL}" == "stable" ]]; then
+            updater_latest_url="${R2_PUBLIC_BASE_URL%/}/updater/latest/latest.json"
+            [[ "$(curl --fail --silent --show-error --location "${updater_latest_url}" | jq -r '.version')" == "${UPDATER_VERSION}" ]] || {
+              echo "R2 updater latest metadata verification failed." >&2
+              exit 1
+            }
+            curl --fail --silent --show-error --location \
+              --range 0-0 \
+              --output /tmp/updater-range.bin \
+              "${R2_PUBLIC_BASE_URL%/}/updater/latest/SarahUpdater-win-x64.zip"
+            [[ "$(stat -c '%s' /tmp/updater-range.bin)" == "1" ]] || {
+              echo "R2 updater latest byte-range verification failed." >&2
+              exit 1
+            }
+          fi
+
+      - name: Register signed R2 manifest in Sarah entitlement service
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg channel "${CHANNEL}" \
+            --slurpfile manifest release-assets/release-manifest.json \
+            '{channel: $channel, manifest: $manifest[0]}' > release-assets/build-admin-request.json
+          curl --fail-with-body --silent --show-error \
+            -X POST "${SARAH_BUILD_ADMIN_URL}" \
+            -H 'content-type: application/json' \
+            -H "x-sarah-admin-token: ${SARAH_BUILD_ADMIN_TOKEN}" \
+            --data-binary @release-assets/build-admin-request.json
+          echo
+          echo "Sarah Lite ${VERSION} ${CHANNEL} entitlement now points to Cloudflare R2."
+
+      - name: Upload signed metadata to GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --clobber \
+            release-assets/release-manifest.json \
+            release-assets/SHA256SUMS.txt \
+            release-assets/latest.json
+
+      - name: Publish immutable GitHub Release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --draft=false
