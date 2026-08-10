@@ -1,0 +1,68 @@
+name: Validate Sarah Updater 0.3.15 MBR fix
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-updater-0315-mbr-fix.yml'
+      - '.github/validate-updater-0315-trigger.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout private SarahDiagnostic fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: fix/updater-0.3.15-mbr-write-verify
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate Sarah Updater icon
+        shell: pwsh
+        working-directory: source
+        run: ./updater/tools/New-SarahUpdaterIcon.ps1
+
+      - name: Restore and build Windows updater solution
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed.' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed.' }
+
+      - name: Run Updater core regression tests
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'Sarah Updater core tests failed.' }
+
+      - name: Run self-update version contract
+        shell: pwsh
+        working-directory: source
+        run: python tests/UpdaterSelfUpdateSourceTests.py
+
+      - name: Run Windows USB write isolation contract
+        shell: pwsh
+        working-directory: source
+        run: python tests/WindowsUsbWriteIsolationSourceTests.py
