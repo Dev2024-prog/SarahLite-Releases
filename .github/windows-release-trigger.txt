@@ -1,1 +1,2 @@
 release Sarah Setup 0.1.3 with Sarah Updater 0.3.14
+publish trigger 2026-08-10T23:36+02:00
