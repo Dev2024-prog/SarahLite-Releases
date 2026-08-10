@@ -26,23 +26,23 @@ jobs:
             echo "Attempt $attempt: version=$version"
             if [ "$version" = '0.3.15' ]; then
               printf '%s' "$json" > /tmp/latest.json
-              python3 - <<'PY'
-          import hashlib, json, urllib.request
-          with open('/tmp/latest.json', 'r', encoding='utf-8') as f:
-              d = json.load(f)
-          for key in ('download_url', 'sha256', 'signature'):
-              if not d.get(key):
-                  raise SystemExit(f'missing {key}')
-          req = urllib.request.Request(d['download_url'], headers={'Cache-Control':'no-cache'})
-          with urllib.request.urlopen(req, timeout=180) as r:
-              data = r.read()
-          if d.get('size') and len(data) != int(d['size']):
-              raise SystemExit(f"size mismatch: {len(data)} != {d['size']}")
-          actual = hashlib.sha256(data).hexdigest().lower()
-          if actual != d['sha256'].lower():
-              raise SystemExit(f"sha256 mismatch: {actual} != {d['sha256']}")
-          print(f"Verified Sarah Updater {d['version']} public package: {len(data)} bytes, sha256={actual}")
-          PY
+              download_url="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json"))["download_url"])')"
+              expected_sha="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json"))["sha256"].lower())')"
+              expected_size="$(python3 -c 'import json; print(int(json.load(open("/tmp/latest.json"))["size"]))')"
+              signature="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json")).get("signature", ""))')"
+              if [ -z "$download_url" ] || [ -z "$expected_sha" ] || [ -z "$signature" ]; then
+                echo 'Manifest is missing required release fields.' >&2
+                exit 1
+              fi
+              curl --fail --show-error --location \
+                -H 'Cache-Control: no-cache' \
+                -H 'User-Agent: Sarah-R2-Verifier/1.0' \
+                "$download_url" -o /tmp/SarahUpdater-0.3.15-win-x64.zip
+              actual_size="$(stat -c%s /tmp/SarahUpdater-0.3.15-win-x64.zip)"
+              actual_sha="$(sha256sum /tmp/SarahUpdater-0.3.15-win-x64.zip | awk '{print $1}')"
+              test "$actual_size" = "$expected_size" || { echo "size mismatch: $actual_size != $expected_size" >&2; exit 1; }
+              test "$actual_sha" = "$expected_sha" || { echo "sha256 mismatch: $actual_sha != $expected_sha" >&2; exit 1; }
+              echo "Verified Sarah Updater 0.3.15 public package: $actual_size bytes, sha256=$actual_sha"
               exit 0
             fi
             sleep 15
