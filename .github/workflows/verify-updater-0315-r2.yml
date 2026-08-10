@@ -1,0 +1,51 @@
+name: Verify Sarah Updater 0.3.15 R2
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/verify-updater-0315-r2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Verify public latest manifest and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_url='https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
+          for attempt in $(seq 1 30); do
+            json="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "$manifest_url" || true)"
+            version="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version", ""))' 2>/dev/null || true)"
+            echo "Attempt $attempt: version=$version"
+            if [ "$version" = '0.3.15' ]; then
+              printf '%s' "$json" > /tmp/latest.json
+              python3 - <<'PY'
+          import hashlib, json, urllib.request
+          with open('/tmp/latest.json', 'r', encoding='utf-8') as f:
+              d = json.load(f)
+          for key in ('download_url', 'sha256', 'signature'):
+              if not d.get(key):
+                  raise SystemExit(f'missing {key}')
+          req = urllib.request.Request(d['download_url'], headers={'Cache-Control':'no-cache'})
+          with urllib.request.urlopen(req, timeout=180) as r:
+              data = r.read()
+          if d.get('size') and len(data) != int(d['size']):
+              raise SystemExit(f"size mismatch: {len(data)} != {d['size']}")
+          actual = hashlib.sha256(data).hexdigest().lower()
+          if actual != d['sha256'].lower():
+              raise SystemExit(f"sha256 mismatch: {actual} != {d['sha256']}")
+          print(f"Verified Sarah Updater {d['version']} public package: {len(data)} bytes, sha256={actual}")
+          PY
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'R2 latest manifest did not reach Sarah Updater 0.3.15 in time.' >&2
+          exit 1
