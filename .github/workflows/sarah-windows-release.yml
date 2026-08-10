@@ -204,18 +204,17 @@ jobs:
             throw 'Sarah Setup ZIP was not created.'
           }
 
-          $notes = @"
-# Sarah Windows telepítési csomag
-
-- Sarah Setup: $env:SARAH_SETUP_VERSION
-- Sarah Updater: $env:SARAH_UPDATER_VERSION
-- Platform: Windows x64
-
-A Setup a publikus, aláírt R2 latest manifestből telepíti a Sarah Updatert. A release elkészítése előtt a workflow ellenőrzi, hogy a publikus latest valóban a $env:SARAH_UPDATER_VERSION verzióra mutat, majd SHA-256 alapján ellenőrzi a letöltött Updater csomagot.
-
-A $env:SARAH_UPDATER_VERSION tartalmazza a pendrive nyers ISO-írás előtti boot/metaadat takarítását, valamint a korábbi self-update fájlzár-védelmeket. A fizikai USB boot elfogadási teszt továbbra is külön hardveres ellenőrzés.
-"@
-          Set-Content -Path 'windows-release/RELEASE_NOTES.md' -Value $notes -Encoding utf8
+          @(
+            '# Sarah Windows telepítési csomag'
+            ''
+            "- Sarah Setup: $env:SARAH_SETUP_VERSION"
+            "- Sarah Updater: $env:SARAH_UPDATER_VERSION"
+            '- Platform: Windows x64'
+            ''
+            "A Setup a publikus, aláírt R2 latest manifestből telepíti a Sarah Updatert. A release elkészítése előtt a workflow ellenőrzi, hogy a publikus latest valóban a $env:SARAH_UPDATER_VERSION verzióra mutat, majd SHA-256 alapján ellenőrzi a letöltött Updater csomagot."
+            ''
+            "A $env:SARAH_UPDATER_VERSION tartalmazza a pendrive nyers ISO-írás előtti boot/metaadat takarítását, valamint a korábbi self-update fájlzár-védelmeket. A fizikai USB boot elfogadási teszt továbbra is külön hardveres ellenőrzés."
+          ) | Set-Content -Path 'windows-release/RELEASE_NOTES.md' -Encoding utf8
 
       - name: Upload combined validation artifact
         uses: actions/upload-artifact@v4
