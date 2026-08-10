@@ -1,1 +1,1 @@
-Validate signed Sarah Updater self-update flow and nonintrusive update banner: 2026-08-10T13:25+02:00
+Validate Sarah Updater 0.3.10 tray mode and passive focus-safe update toast: 2026-08-10T14:20+02:00
