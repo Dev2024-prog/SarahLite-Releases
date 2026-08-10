@@ -1,1 +1,1 @@
-Validate signed Sarah Updater self-update flow and nonintrusive update banner: 2026-08-10T13:25+02:00
+Validate Sarah Updater 0.3.11 aligned license discovery and dedicated SarahUninstaller: 2026-08-10T15:33+02:00
