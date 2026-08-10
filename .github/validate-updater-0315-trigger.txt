@@ -1,0 +1,1 @@
+validate Sarah Updater 0.3.15 MBR/raw-write fix
