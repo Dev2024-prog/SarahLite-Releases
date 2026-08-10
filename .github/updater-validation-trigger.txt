@@ -1,1 +1,1 @@
-Validate Sarah Updater automatic installed-license flow after final UI refinement: 2026-08-10T13:00+02:00
+PR validation for Sarah Updater 0.3.9 automatic installed-license flow.
