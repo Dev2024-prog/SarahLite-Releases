@@ -62,12 +62,14 @@ jobs:
           dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
           if ($LASTEXITCODE -ne 0) { throw 'Updater core tests failed' }
 
-      - name: Run automatic-license source contracts
+      - name: Run updater source contracts
         shell: pwsh
         working-directory: source
         run: |
           python tests/UpdaterAutomaticLicenseSourceTests.py
           if ($LASTEXITCODE -ne 0) { throw 'Automatic-license source contract failed' }
+          python tests/UpdaterSelfUpdateSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Self-update source contract failed' }
           python tests/OneTimeInstallCodeSourceTests.py
           if ($LASTEXITCODE -ne 0) { throw 'One-time install source contract failed' }
 
