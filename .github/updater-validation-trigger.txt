@@ -1,1 +1,1 @@
-Validate signed Sarah Updater self-update flow and nonintrusive update banner: 2026-08-10T13:25+02:00
+Validate Sarah Updater 0.3.13 tray notification text and current setup integration: 2026-08-10T22:39+02:00
