@@ -2,6 +2,11 @@ name: Sarah Setup build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/setup-build-trigger.txt'
   pull_request:
     branches:
       - main
