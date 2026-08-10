@@ -1,1 +1,1 @@
-Validate Sarah Updater automatic installed-license flow after final UI refinement: 2026-08-10T13:00+02:00
+Validate signed Sarah Updater self-update flow and nonintrusive update banner: 2026-08-10T13:25+02:00
