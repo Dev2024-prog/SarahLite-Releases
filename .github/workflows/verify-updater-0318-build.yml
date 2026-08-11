@@ -1,0 +1,51 @@
+name: Verify Sarah Updater 0.3.18 build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-updater-0318-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout SarahDiagnostic fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: fix/updater-0.3.18-self-update-path
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate updater icon
+        shell: pwsh
+        run: ./updater/tools/New-SarahUpdaterIcon.ps1
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet restore failed' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'dotnet build failed' }
+      - name: Core tests and focused contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'core tests failed' }
+          python tests/UpdaterSelfUpdateSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'self-update contract failed' }
+          python tests/WindowsUsbWriteIsolationSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'USB write contract failed' }
