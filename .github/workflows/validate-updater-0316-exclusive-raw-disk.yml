@@ -1,0 +1,69 @@
+name: Validate Sarah Updater 0.3.16 exclusive raw disk
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-updater-0316-exclusive-raw-disk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout private SarahDiagnostic fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: fix/updater-0.3.16-exclusive-raw-disk
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate Sarah Updater icon
+        shell: pwsh
+        working-directory: source
+        run: ./updater/tools/New-SarahUpdaterIcon.ps1
+
+      - name: Restore and build Windows updater solution
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet restore updater/SarahUpdater.sln
+          if ($LASTEXITCODE -ne 0) { throw 'restore failed' }
+          dotnet build updater/SarahUpdater.sln --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+
+      - name: Run Updater core regression tests
+        shell: pwsh
+        working-directory: source
+        run: |
+          dotnet run --project updater/tests/SarahUpdater.Core.Tests/SarahUpdater.Core.Tests.csproj --configuration Release --no-build
+          if ($LASTEXITCODE -ne 0) { throw 'core tests failed' }
+
+      - name: Run Updater release/self-update contracts
+        shell: pwsh
+        working-directory: source
+        run: |
+          python tests/UpdaterSelfUpdateSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'updater self-update/exclusive raw-disk contract failed' }
+
+      - name: Run Windows USB write isolation contracts
+        shell: pwsh
+        working-directory: source
+        run: |
+          python tests/WindowsUsbWriteIsolationSourceTests.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows USB isolation contract failed' }
