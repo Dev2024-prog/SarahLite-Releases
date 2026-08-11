@@ -1,0 +1,1 @@
+patch Sarah Windows release workflow for Updater 0.3.18
