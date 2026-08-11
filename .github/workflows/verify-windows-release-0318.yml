@@ -1,0 +1,39 @@
+name: Verify Sarah Windows 0.1.3 + 0.3.18 release
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-windows-release-0318.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify release and assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='windows-setup-v0.1.3-updater-v0.3.18'
+          repo='${{ github.repository }}'
+          json="$(gh release view "$tag" --repo "$repo" --json tagName,name,assets)"
+          echo "$json"
+          test "$(jq -r '.tagName' <<<"$json")" = "$tag"
+          test "$(jq -r '.name' <<<"$json")" = 'Sarah Setup 0.1.3 + Sarah Updater 0.3.18'
+          mapfile -t names < <(jq -r '.assets[].name' <<<"$json" | sort)
+          expected=(
+            'SarahSetup-0.1.3-win-x64.zip'
+            'SarahSetup.exe'
+            'SarahSetup.sha256'
+            'SarahUpdater-0.3.18-win-x64.sha256'
+            'SarahUpdater-0.3.18-win-x64.zip'
+          )
+          printf '%s\n' "${names[@]}" > actual.txt
+          printf '%s\n' "${expected[@]}" | sort > expected.txt
+          diff -u expected.txt actual.txt
