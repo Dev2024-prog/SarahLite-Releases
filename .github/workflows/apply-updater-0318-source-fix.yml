@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - '.github/updater-0318-source-fix-trigger.txt'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/updater-0318-source-fix-trigger.txt'
 
 permissions:
   contents: read
