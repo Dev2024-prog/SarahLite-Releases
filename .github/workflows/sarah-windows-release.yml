@@ -82,8 +82,8 @@ jobs:
           if ($env:SARAH_SETUP_VERSION -ne '0.1.3') {
             throw "This release trigger expects Sarah Setup 0.1.3, source is $env:SARAH_SETUP_VERSION."
           }
-          if ($env:SARAH_UPDATER_VERSION -ne '0.3.16') {
-            throw "This release trigger expects Sarah Updater 0.3.16, source is $env:SARAH_UPDATER_VERSION."
+          if ($env:SARAH_UPDATER_VERSION -ne '0.3.18') {
+            throw "This release trigger expects Sarah Updater 0.3.18, source is $env:SARAH_UPDATER_VERSION."
           }
 
       - name: Generate Sarah icon and embed release public key
@@ -213,7 +213,7 @@ jobs:
             ''
             "A Setup a publikus, aláírt R2 latest manifestből telepíti a Sarah Updatert. A release elkészítése előtt a workflow ellenőrzi, hogy a publikus latest valóban a $env:SARAH_UPDATER_VERSION verzióra mutat, majd SHA-256 alapján ellenőrzi a letöltött Updater csomagot."
             ''
-            "A $env:SARAH_UPDATER_VERSION tartalmazza a pendrive nyers ISO-írás előtti boot/metaadat takarítását, az írás utáni MBR/bootterület visszaellenőrzést és szükség esetén javító újraírást, valamint a korábbi self-update fájlzár-védelmeket. A fizikai USB boot elfogadási teszt továbbra is külön hardveres ellenőrzés."
+            "A $env:SARAH_UPDATER_VERSION a hitelesített ISO-t byte 0-tól írja ki anélkül, hogy előtte lenullázná az image elejét; megtartja a fizikai lemezvég stale GPT/metaadat takarítását, az MBR/bootterület visszaellenőrzését és a javított önfrissítési cserefolyamatot. A fizikai USB boot elfogadási teszt továbbra is külön hardveres ellenőrzés."
           ) | Set-Content -Path 'windows-release/RELEASE_NOTES.md' -Encoding utf8
 
       - name: Upload combined validation artifact
