@@ -1,1 +1,1 @@
-release Sarah Updater 0.3.17 from SarahDiagnostic/main
+release Sarah Updater 0.3.18 from SarahDiagnostic/main
