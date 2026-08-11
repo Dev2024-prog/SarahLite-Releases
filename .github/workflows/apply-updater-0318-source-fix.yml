@@ -25,7 +25,7 @@ jobs:
           ref: fix/updater-0.3.18-self-update-path
           token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -35,11 +35,15 @@ jobs:
         run: |
           python tests/UpdaterSelfUpdateSourceTests.py
           python tests/WindowsUsbWriteIsolationSourceTests.py
-      - name: Commit and push corrected source
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add updater/src/SarahUpdater.Windows/MainWindow.SelfUpdate.cs updater/src/SarahUpdater.Windows/SarahUpdater.Windows.csproj updater/src/SarahUpdater.Windows/WindowsDiskServices.cs tests/UpdaterSelfUpdateSourceTests.py tests/WindowsUsbWriteIsolationSourceTests.py
-          git diff --cached --check
-          git commit -m "Fix Sarah Updater 0.3.18 self-update and DD write prefix"
-          git push origin HEAD:fix/updater-0.3.18-self-update-path
+          git diff --check
+      - name: Export corrected source
+        uses: actions/upload-artifact@v4
+        with:
+          name: SarahUpdater-0.3.18-corrected-source
+          retention-days: 1
+          path: |
+            updater/src/SarahUpdater.Windows/MainWindow.SelfUpdate.cs
+            updater/src/SarahUpdater.Windows/SarahUpdater.Windows.csproj
+            updater/src/SarahUpdater.Windows/WindowsDiskServices.cs
+            tests/UpdaterSelfUpdateSourceTests.py
+            tests/WindowsUsbWriteIsolationSourceTests.py
