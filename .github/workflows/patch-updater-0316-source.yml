@@ -1,0 +1,72 @@
+name: Patch Sarah Updater 0.3.16 source
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/patch-updater-0316-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout SarahDiagnostic fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: fix/updater-0.3.16-exclusive-raw-disk
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Patch exclusive physical-disk write access
+        working-directory: source
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p=Path(path)
+              text=p.read_text(encoding='utf-8')
+              count=text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, got {count}')
+              p.write_text(text.replace(old,new,1),encoding='utf-8')
+
+          replace_once(
+              'updater/src/SarahUpdater.Windows/WindowsDiskServices.cs',
+              '''    private static FileStream OpenPhysicalDisk(WindowsDiskInfo disk) =>\n        new(\n            disk.DevicePath,\n            FileMode.Open,\n            FileAccess.ReadWrite,\n            FileShare.ReadWrite,\n            BufferSize,\n            FileOptions.WriteThrough);''',
+              '''    private static FileStream OpenPhysicalDisk(WindowsDiskInfo disk)\n    {\n        // Keep read sharing for Windows enumeration, but never grant write sharing\n        // while raw image bytes are being written to the physical device.\n        var stream = new FileStream(\n            disk.DevicePath,\n            FileMode.Open,\n            FileAccess.ReadWrite,\n            FileShare.Read,\n            BufferSize,\n            FileOptions.WriteThrough);\n        try\n        {\n            WindowsPhysicalDiskDirectAccess.Prepare(stream.SafeFileHandle);\n            return stream;\n        }\n        catch\n        {\n            stream.Dispose();\n            throw;\n        }\n    }''')
+
+          replace_once(
+              'tests/WindowsUsbWriteIsolationSourceTests.py',
+              '''    writer = load("updater/src/SarahUpdater.Windows/WindowsDiskServices.cs")\n    volume_locks = load("updater/src/SarahUpdater.Windows/WindowsVolumeLockSet.cs")''',
+              '''    writer = load("updater/src/SarahUpdater.Windows/WindowsDiskServices.cs")\n    direct_access = load("updater/src/SarahUpdater.Windows/WindowsPhysicalDiskDirectAccess.cs")\n    boot_verifier = load("updater/src/SarahUpdater.Core/RawImageBootAreaVerifier.cs")\n    volume_locks = load("updater/src/SarahUpdater.Windows/WindowsVolumeLockSet.cs")''')
+
+          replace_once(
+              'tests/WindowsUsbWriteIsolationSourceTests.py',
+              '''    reject(writer, "Set-Disk -Number", "unsupported removable-media disk offlining")\n    reject(writer, "SetDiskOfflineAsync", "unsupported removable-media disk offlining helper")''',
+              '''    reject(writer, "Set-Disk -Number", "unsupported removable-media disk offlining")\n    reject(writer, "SetDiskOfflineAsync", "unsupported removable-media disk offlining helper")\n\n    raw_open_start = writer.index("private static FileStream OpenPhysicalDisk(WindowsDiskInfo disk)")\n    raw_open_end = writer.index("private static FileStream OpenPhysicalDiskReadOnly", raw_open_start)\n    raw_open = writer[raw_open_start:raw_open_end]\n    require(raw_open, "FileShare.Read,", "exclusive physical-disk write sharing")\n    reject(raw_open, "FileShare.ReadWrite", "physical-disk write sharing")\n    require(raw_open, "WindowsPhysicalDiskDirectAccess.Prepare(stream.SafeFileHandle)",\n            "direct DASD preparation")\n\n    for value, label in (\n        ("FsctlAllowExtendedDasdIo", "FSCTL_ALLOW_EXTENDED_DASD_IO control code"),\n        ("DeviceIoControl", "physical-disk DeviceIoControl"),\n    ):\n        require(direct_access, value, label)\n\n    for value, label in (\n        ("FindFirstMismatch", "precise boot-area mismatch detection"),\n        ("offset=", "mismatch byte offset diagnostic"),\n        ("ISO=0x", "expected boot byte diagnostic"),\n        ("USB=0x", "actual USB byte diagnostic"),\n    ):\n        require(boot_verifier, value, label)''')
+          PY
+
+      - name: Commit and push SarahDiagnostic patch
+        working-directory: source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add updater/src/SarahUpdater.Windows/WindowsDiskServices.cs tests/WindowsUsbWriteIsolationSourceTests.py
+          git diff --cached --check
+          git commit -m "Use exclusive physical-disk write access for Updater 0.3.16"
+          git push origin HEAD:fix/updater-0.3.16-exclusive-raw-disk
