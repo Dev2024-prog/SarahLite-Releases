@@ -1,0 +1,42 @@
+name: Verify Sarah Updater 0.3.18 R2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/verify-updater-0318-r2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify R2 latest and embedded EXE version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifestUrl = 'https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
+          $manifest = Invoke-RestMethod -Uri $manifestUrl -Headers @{ 'Cache-Control' = 'no-cache' }
+          Write-Host "Manifest version: $($manifest.version)"
+          if ($manifest.version -ne '0.3.18') { throw "Expected manifest 0.3.18, got $($manifest.version)" }
+
+          $zip = Join-Path $env:RUNNER_TEMP 'SarahUpdater-latest.zip'
+          Invoke-WebRequest -Uri $manifest.download_url -OutFile $zip -Headers @{ 'Cache-Control' = 'no-cache' }
+          $actualSha = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLowerInvariant()
+          $expectedSha = ([string]$manifest.sha256).ToLowerInvariant()
+          Write-Host "ZIP SHA256: $actualSha"
+          if ($actualSha -ne $expectedSha) { throw "ZIP SHA-256 mismatch: $actualSha != $expectedSha" }
+
+          $dir = Join-Path $env:RUNNER_TEMP 'SarahUpdater-latest'
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $exe = Join-Path $dir 'SarahUpdater.exe'
+          if (-not (Test-Path $exe)) { throw 'SarahUpdater.exe missing from latest ZIP.' }
+          $versionInfo = (Get-Item $exe).VersionInfo
+          Write-Host "FileVersion: $($versionInfo.FileVersion)"
+          Write-Host "ProductVersion: $($versionInfo.ProductVersion)"
+          if (-not ([string]$versionInfo.FileVersion).StartsWith('0.3.18')) {
+            throw "Latest ZIP contains wrong SarahUpdater.exe FileVersion: $($versionInfo.FileVersion)"
+          }
