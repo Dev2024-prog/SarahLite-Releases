@@ -1,1 +1,1 @@
-apply Sarah Updater 0.3.18 focused self-update and DD write fix
+apply Sarah Updater 0.3.18 focused source fix via PR validation
