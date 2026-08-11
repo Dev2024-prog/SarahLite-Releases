@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/verify-updater-binary-version.yml'
+      - '.github/binary-version-check-trigger.txt'
 
 permissions:
   contents: read
