@@ -1,0 +1,51 @@
+name: Verify Sarah Updater 0.3.16 R2
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/verify-updater-0316-r2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Verify public latest manifest and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_url='https://pub-56a72322d1164f45a163e58491fcca58.r2.dev/updater/latest/latest.json'
+          for attempt in $(seq 1 30); do
+            json="$(curl --fail --silent --show-error --location -H 'Cache-Control: no-cache' "$manifest_url" || true)"
+            version="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version", ""))' 2>/dev/null || true)"
+            echo "Attempt $attempt: version=$version"
+            if [ "$version" = '0.3.16' ]; then
+              printf '%s' "$json" > /tmp/latest.json
+              download_url="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json"))["download_url"])')"
+              expected_sha="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json"))["sha256"].lower())')"
+              expected_size="$(python3 -c 'import json; print(int(json.load(open("/tmp/latest.json"))["size"]))')"
+              signature="$(python3 -c 'import json; print(json.load(open("/tmp/latest.json")).get("signature", ""))')"
+              if [ -z "$download_url" ] || [ -z "$expected_sha" ] || [ -z "$signature" ]; then
+                echo 'Manifest is missing required release fields.' >&2
+                exit 1
+              fi
+              curl --fail --show-error --location \
+                -H 'Cache-Control: no-cache' \
+                -H 'User-Agent: Sarah-R2-Verifier/1.0' \
+                "$download_url" -o /tmp/SarahUpdater-0.3.16-win-x64.zip
+              actual_size="$(stat -c%s /tmp/SarahUpdater-0.3.16-win-x64.zip)"
+              actual_sha="$(sha256sum /tmp/SarahUpdater-0.3.16-win-x64.zip | awk '{print $1}')"
+              test "$actual_size" = "$expected_size" || { echo "size mismatch: $actual_size != $expected_size" >&2; exit 1; }
+              test "$actual_sha" = "$expected_sha" || { echo "sha256 mismatch: $actual_sha != $expected_sha" >&2; exit 1; }
+              echo "Verified Sarah Updater 0.3.16 public package: $actual_size bytes, sha256=$actual_sha"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'R2 latest manifest did not reach Sarah Updater 0.3.16 in time.' >&2
+          exit 1
