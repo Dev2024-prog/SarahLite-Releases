@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN="$SOURCE_TOKEN" gh api "repos/$SOURCE_REPOSITORY" --jq '.full_name' >/dev/null
           GH_TOKEN="$DEST_TOKEN" gh api "repos/$DEST_REPOSITORY" --jq '.full_name' >/dev/null
 
-      - name: Copy, verify, then remove source Releases
+      - name: Copy and verify every source Release
         shell: bash
         run: |
           set -euo pipefail
@@ -44,7 +44,7 @@ jobs:
 
           GH_TOKEN="$SOURCE_TOKEN" gh api --paginate "repos/$SOURCE_REPOSITORY/releases?per_page=100" --jq '.[] | @base64' > "$root/releases.b64"
           release_count="$(wc -l < "$root/releases.b64" | tr -d ' ')"
-          echo "Source releases to migrate: $release_count"
+          echo "Source releases to copy: $release_count"
 
           while IFS= read -r encoded; do
             test -n "$encoded" || continue
@@ -58,31 +58,11 @@ jobs:
             asset_count="$(jq '.assets | length' <<<"$release_json")"
 
             test -n "$tag" && test "$tag" != "null" || { echo "Release $id has no tag." >&2; exit 1; }
-            echo "---- Migrating $tag ($asset_count assets) ----"
+            echo "---- Copying $tag ($asset_count assets) ----"
 
             work="$root/$id"
             rm -rf "$work"
             mkdir -p "$work"
-
-            if (( asset_count > 0 )); then
-              while IFS=$'\t' read -r asset_name asset_url asset_size asset_digest; do
-                echo "Downloading $asset_name"
-                GH_TOKEN="$SOURCE_TOKEN" gh api -H 'Accept: application/octet-stream' "$asset_url" > "$work/$asset_name"
-                local_size="$(stat -c '%s' "$work/$asset_name")"
-                if [[ "$local_size" != "$asset_size" ]]; then
-                  echo "Source download size mismatch for $asset_name: $local_size != $asset_size" >&2
-                  exit 1
-                fi
-                if [[ -n "$asset_digest" && "$asset_digest" != "null" && "$asset_digest" == sha256:* ]]; then
-                  expected="${asset_digest#sha256:}"
-                  actual="$(sha256sum "$work/$asset_name" | awk '{print $1}')"
-                  [[ "$actual" == "$expected" ]] || {
-                    echo "Source download SHA-256 mismatch for $asset_name" >&2
-                    exit 1
-                  }
-                fi
-              done < <(jq -r '.assets[] | [.name,.url,(.size|tostring),(.digest // "")] | @tsv' <<<"$release_json")
-            fi
 
             migration_note=$'\n\nBuild/source repository: Dev2024-prog/SarahDiagnostic\nMigrated to the single public download repository: Dev2024-prog/SarahLite-Releases'
             if [[ "$body" != *"Migrated to the single public download repository"* ]]; then
@@ -90,7 +70,9 @@ jobs:
             fi
 
             dest_json=''
+            dest_exists=false
             if dest_json="$(GH_TOKEN="$DEST_TOKEN" gh api "repos/$DEST_REPOSITORY/releases/tags/$tag" 2>/dev/null)"; then
+              dest_exists=true
               dest_id="$(jq -r '.id' <<<"$dest_json")"
               jq -n \
                 --arg name "$title" \
@@ -108,11 +90,54 @@ jobs:
                 --argjson prerelease "$prerelease" \
                 '{tag_name:$tag,target_commitish:"main",name:$name,body:$body,draft:$draft,prerelease:$prerelease}' > "$work/release.json"
               GH_TOKEN="$DEST_TOKEN" gh api --method POST "repos/$DEST_REPOSITORY/releases" --input "$work/release.json" >/dev/null
+              dest_json="$(GH_TOKEN="$DEST_TOKEN" gh api "repos/$DEST_REPOSITORY/releases/tags/$tag")"
             fi
 
+            assets_match=true
             if (( asset_count > 0 )); then
-              mapfile -d '' files < <(find "$work" -maxdepth 1 -type f ! -name 'release.json' -print0)
-              GH_TOKEN="$DEST_TOKEN" gh release upload "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --clobber
+              if [[ "$dest_exists" != true ]]; then
+                assets_match=false
+              else
+                while IFS=$'\t' read -r asset_name asset_size asset_digest; do
+                  dest_size="$(jq -r --arg n "$asset_name" '.assets[] | select(.name==$n) | .size' <<<"$dest_json" | head -n1)"
+                  dest_digest="$(jq -r --arg n "$asset_name" '.assets[] | select(.name==$n) | (.digest // "")' <<<"$dest_json" | head -n1)"
+                  if [[ -z "$dest_size" || "$dest_size" != "$asset_size" ]]; then
+                    assets_match=false
+                    break
+                  fi
+                  if [[ -n "$asset_digest" && "$asset_digest" != "null" && -n "$dest_digest" && "$dest_digest" != "null" && "$dest_digest" != "$asset_digest" ]]; then
+                    assets_match=false
+                    break
+                  fi
+                done < <(jq -r '.assets[] | [.name,(.size|tostring),(.digest // "")] | @tsv' <<<"$release_json")
+              fi
+            fi
+
+            if [[ "$assets_match" == true ]]; then
+              echo "$tag is already byte-for-byte represented in $DEST_REPOSITORY; upload skipped."
+            else
+              if (( asset_count > 0 )); then
+                while IFS=$'\t' read -r asset_name asset_url asset_size asset_digest; do
+                  echo "Downloading $asset_name"
+                  GH_TOKEN="$SOURCE_TOKEN" gh api -H 'Accept: application/octet-stream' "$asset_url" > "$work/$asset_name"
+                  local_size="$(stat -c '%s' "$work/$asset_name")"
+                  [[ "$local_size" == "$asset_size" ]] || {
+                    echo "Source download size mismatch for $asset_name: $local_size != $asset_size" >&2
+                    exit 1
+                  }
+                  if [[ -n "$asset_digest" && "$asset_digest" != "null" && "$asset_digest" == sha256:* ]]; then
+                    expected="${asset_digest#sha256:}"
+                    actual="$(sha256sum "$work/$asset_name" | awk '{print $1}')"
+                    [[ "$actual" == "$expected" ]] || {
+                      echo "Source download SHA-256 mismatch for $asset_name" >&2
+                      exit 1
+                    }
+                  fi
+                done < <(jq -r '.assets[] | [.name,.url,(.size|tostring),(.digest // "")] | @tsv' <<<"$release_json")
+
+                mapfile -d '' files < <(find "$work" -maxdepth 1 -type f ! -name 'release.json' -print0)
+                GH_TOKEN="$DEST_TOKEN" gh release upload "$tag" "${files[@]}" --repo "$DEST_REPOSITORY" --clobber
+              fi
             fi
 
             verified_json="$(GH_TOKEN="$DEST_TOKEN" gh api "repos/$DEST_REPOSITORY/releases/tags/$tag")"
@@ -131,19 +156,14 @@ jobs:
               fi
             done < <(jq -r '.assets[] | [.name,(.size|tostring),(.digest // "")] | @tsv' <<<"$release_json")
 
-            echo "Verified $tag in $DEST_REPOSITORY. Removing source Release only after verification."
-            GH_TOKEN="$SOURCE_TOKEN" gh api --method DELETE "repos/$SOURCE_REPOSITORY/releases/$id" >/dev/null
-            GH_TOKEN="$SOURCE_TOKEN" gh api --method DELETE "repos/$SOURCE_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1 || true
+            echo "Verified $tag in $DEST_REPOSITORY."
             rm -rf "$work"
           done < "$root/releases.b64"
 
-      - name: Verify single release location
+      - name: Report source cleanup state
         shell: bash
         run: |
           set -euo pipefail
           remaining="$(GH_TOKEN="$SOURCE_TOKEN" gh api "repos/$SOURCE_REPOSITORY/releases?per_page=100" --jq 'length')"
-          [[ "$remaining" == "0" ]] || {
-            echo "$remaining source release(s) remain in SarahDiagnostic." >&2
-            exit 1
-          }
-          echo "All GitHub Releases are now centralized in $DEST_REPOSITORY."
+          echo "All $remaining source Release entries have verified copies in $DEST_REPOSITORY."
+          echo "The public repository token is intentionally read-only for SarahDiagnostic, so source deletion is left to the write-capable SarahDiagnostic cleanup workflow."
