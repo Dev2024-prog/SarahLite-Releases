@@ -1,1 +1,0 @@
-Validate signed Sarah Updater self-update flow and nonintrusive update banner: 2026-08-10T13:25+02:00

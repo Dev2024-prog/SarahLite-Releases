@@ -1,1 +1,0 @@
-release Sarah Updater 0.3.19 from SarahDiagnostic/main
