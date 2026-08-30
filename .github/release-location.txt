@@ -1,2 +1,0 @@
-canonical_download_repository=Dev2024-prog/SarahLite-Releases
-source_repository=Dev2024-prog/SarahDiagnostic
