@@ -1,6 +1,6 @@
 # Security Policy
 
-Ez a dokumentum elsősorban azoknak szól, akik **Sarah Lite-tal kapcsolatos biztonsági hibát, sérülékenységet vagy integritási problémát találtak**, és a README `Fejlesztőknek és biztonsági hibát jelentőknek` részéből érkeztek ide.
+Ez a dokumentum azoknak szól, akik **Sarah Lite-tal kapcsolatos biztonsági hibát, sérülékenységet vagy integritási problémát találtak**.
 
 ## Mit jelents itt?
 
