@@ -17,4 +17,12 @@ A release leírása minden új buildnél megőrzi a pontos `SarahDiagnostic` for
 
 ## Biztonság
 
-Kizárólag ezen repository **Releases** oldalán közzétett fájlokat használd. Licenckulcsot, személyes adatot vagy hibajelentést ne küldj nyilvános GitHub-felületre.
+### Felhasználóknak és letöltőknek
+
+Ha Sarah Lite-ot töltesz le, telepítesz vagy frissítesz, kizárólag ennek a repositorynak a **Releases** oldalán közzétett hivatalos fájlokat használd. Más forrásból származó, újracsomagolt vagy módosított Sarah Lite kiadás hitelessége nem garantálható.
+
+Licenckulcsot, személyes adatot vagy más érzékeny információt ne tegyél közzé nyilvános GitHub issue-ban, hozzászólásban vagy más publikus felületen.
+
+### Fejlesztőknek és biztonsági hibát jelentőknek
+
+Ha Sarah Lite-tal kapcsolatos biztonsági hibát vagy sérülékenységet találsz, ne nyilvános issue-ban tedd közzé. A részletes biztonsági és hibajelentési szabályokat a repository **Security Policy** dokumentuma tartalmazza.
