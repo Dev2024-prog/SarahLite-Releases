@@ -1,0 +1,88 @@
+name: Sarah production public-runner preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sarah-production-public-runner-preflight
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SARAH_R2_ACCOUNT_ID: ${{ vars.SARAH_R2_ACCOUNT_ID }}
+      SARAH_R2_BUCKET: ${{ vars.SARAH_R2_BUCKET }}
+      SARAH_R2_PUBLIC_BASE_URL: ${{ vars.SARAH_R2_PUBLIC_BASE_URL }}
+      SARAH_UPDATER_AUTH_URL: ${{ vars.SARAH_UPDATER_AUTH_URL }}
+      SARAH_RELEASE_PRIVATE_KEY_PEM_B64: ${{ secrets.SARAH_RELEASE_PRIVATE_KEY_PEM_B64 }}
+      SARAH_RELEASE_PUBLIC_KEY_PEM_B64: ${{ secrets.SARAH_RELEASE_PUBLIC_KEY_PEM_B64 }}
+      SARAH_LICENSE_PUBLIC_KEY_PEM_B64: ${{ secrets.SARAH_LICENSE_PUBLIC_KEY_PEM_B64 }}
+      SARAH_SUPABASE_URL: ${{ secrets.SARAH_SUPABASE_URL }}
+      SARAH_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SARAH_SUPABASE_PUBLISHABLE_KEY }}
+      SARAH_R2_ACCESS_KEY_ID: ${{ secrets.SARAH_R2_ACCESS_KEY_ID }}
+      SARAH_R2_SECRET_ACCESS_KEY: ${{ secrets.SARAH_R2_SECRET_ACCESS_KEY }}
+      SARAH_BUILD_ADMIN_URL: ${{ secrets.SARAH_BUILD_ADMIN_URL }}
+      SARAH_BUILD_ADMIN_TOKEN: ${{ secrets.SARAH_BUILD_ADMIN_TOKEN }}
+    steps:
+      - name: Validate production configuration presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            SARAH_R2_ACCOUNT_ID \
+            SARAH_R2_BUCKET \
+            SARAH_R2_PUBLIC_BASE_URL \
+            SARAH_RELEASE_PRIVATE_KEY_PEM_B64 \
+            SARAH_RELEASE_PUBLIC_KEY_PEM_B64 \
+            SARAH_LICENSE_PUBLIC_KEY_PEM_B64 \
+            SARAH_SUPABASE_URL \
+            SARAH_SUPABASE_PUBLISHABLE_KEY \
+            SARAH_R2_ACCESS_KEY_ID \
+            SARAH_R2_SECRET_ACCESS_KEY \
+            SARAH_BUILD_ADMIN_URL \
+            SARAH_BUILD_ADMIN_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required production setting: $name" >&2
+              missing=1
+            fi
+          done
+          [[ "$missing" -eq 0 ]]
+
+      - name: Checkout private Sarah source read-only
+        uses: actions/checkout@v4
+        with:
+          repository: Dev2024-prog/SarahDiagnostic
+          ref: main
+          token: ${{ secrets.SARAH_SOURCE_REPO_TOKEN }}
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Validate private source checkout and release helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse --verify HEAD >/dev/null
+          test -f scripts/build-gpt-single-system-iso-free-wsl.sh
+          test -f scripts/Publish-SarahSourceLockedRelease.ps1
+          test -f tests/R2SingleIsoSourceTests.py
+          test -f updater/src/SarahUpdater.Windows/SarahAssistant.Windows.csproj
+          echo "Private SarahDiagnostic checkout and production helper files are available."
+
+      - name: Preflight summary
+        shell: bash
+        run: |
+          {
+            echo '### Sarah production preflight'
+            echo '- Private SarahDiagnostic checkout: OK'
+            echo '- Source token: accepted'
+            echo '- Required production settings: present'
+            echo '- R2 was not modified'
+            echo '- No release was published'
+          } >> "$GITHUB_STEP_SUMMARY"
