@@ -2,6 +2,10 @@ name: Sarah production public-runner preflight
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sarah-production-public-runner-preflight.yml'
 
 permissions:
   contents: read
